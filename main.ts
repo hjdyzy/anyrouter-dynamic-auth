@@ -1,47 +1,41 @@
 const UPSTREAM = 'https://anyrouter.top';
 
-const DEBUG_HTML = `<!doctype html>
-<html lang="zh">
-<head>
-  <meta charset="UTF-8" />
-  <title>Anyrouter 动态 Cookie 调试</title>
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; margin: 24px; background: #0b1021; color: #e8edf4; }
-    button { padding: 10px 16px; border: none; background: #14b8a6; color: #021018; border-radius: 6px; cursor: pointer; font-weight: 700; }
-    button:hover { background: #0d9488; }
-    pre { margin-top: 16px; padding: 12px; background: #0f172a; color: #cbd5e1; border-radius: 6px; overflow: auto; }
-    a { color: #7dd3fc; }
-  </style>
-</head>
-<body>
-  <h1>Anyrouter Cookie Debugger</h1>
-  <p>点击按钮触发后端请求挑战页，Eval 混淆脚本并返回当前计算出的 <code>acw_sc__v2</code>。</p>
-  <button id="btn">获取 /api/user/self 的动态 Cookie</button>
-  <pre id="out">等待操作…</pre>
-  <script>
-    const out = document.getElementById('out');
-    document.getElementById('btn').onclick = async () => {
-      out.textContent = '请求中...';
-      const res = await fetch('/debug-cookie?target=/api/user/self');
-      const data = await res.json();
-      out.textContent = JSON.stringify(data, null, 2);
-    };
-  </script>
-</body>
-</html>`;
+// 缓存配置 - 通过环境变量控制
+const CACHE_ENABLED = Deno.env.get('CACHE_ENABLED') !== 'false'; // 默认开启
+const CACHE_TTL_MS = parseInt(Deno.env.get('CACHE_TTL_MINUTES') || '30') * 60 * 1000; // 默认30分钟
+
+// 全局唯一 Cookie 缓存
+let cachedCookie: string | null = null;
+let cacheExpireAt = 0;
 
 Deno.serve(async (req) => {
   const url = new URL(req.url);
 
-  if (url.pathname === '/' || url.pathname === '/debug') {
-    return new Response(DEBUG_HTML, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+  // 首页跳转到 linux.do
+  if (url.pathname === '/') {
+    return new Response(null, {
+      status: 302,
+      headers: { Location: 'https://linux.do' },
+    });
   }
 
-  if (url.pathname === '/debug-cookie') {
-    const targetPath = url.searchParams.get('target') || '/api/user/self';
-    const targetUrl = new URL(targetPath, UPSTREAM);
-    const { cookie, error, htmlSample } = await getDynamicCookie(targetUrl);
-    return Response.json({ target: targetUrl.toString(), cookie, error, htmlSample });
+  // 缓存状态端点
+  if (url.pathname === '/cache-status') {
+    const remaining = Math.max(0, cacheExpireAt - Date.now());
+    return Response.json({
+      enabled: CACHE_ENABLED,
+      ttlMinutes: CACHE_TTL_MS / 60000,
+      cookie: cachedCookie,
+      expireAt: cacheExpireAt ? new Date(cacheExpireAt).toISOString() : null,
+      ttlRemaining: cacheExpireAt ? `${Math.floor(remaining / 60000)}m ${Math.floor((remaining % 60000) / 1000)}s` : null,
+    });
+  }
+
+  // 清除缓存端点
+  if (url.pathname === '/cache-clear') {
+    cachedCookie = null;
+    cacheExpireAt = 0;
+    return Response.json({ success: true, message: 'Cache cleared' });
   }
 
   return proxyWithDynamicCookie(req);
@@ -73,7 +67,12 @@ async function proxyWithDynamicCookie(req: Request): Promise<Response> {
   return new Response(resp.body, { status: resp.status, headers: resp.headers });
 }
 
-async function getDynamicCookie(targetUrl: URL): Promise<{ cookie: string | null; error: string | null; htmlSample?: string }> {
+async function getDynamicCookie(targetUrl: URL): Promise<{ cookie: string | null; error: string | null }> {
+  // 检查缓存
+  if (CACHE_ENABLED && cachedCookie && cacheExpireAt > Date.now()) {
+    return { cookie: cachedCookie, error: null };
+  }
+
   try {
     const challengeResp = await fetch(targetUrl.toString(), {
       method: 'GET',
@@ -87,7 +86,14 @@ async function getDynamicCookie(targetUrl: URL): Promise<{ cookie: string | null
 
     const html = await challengeResp.text();
     const { cookie, error } = extractCookieFromHtml(html);
-    return { cookie, error, htmlSample: html.slice(0, 2000) };
+
+    // 存入缓存
+    if (CACHE_ENABLED && cookie) {
+      cachedCookie = cookie;
+      cacheExpireAt = Date.now() + CACHE_TTL_MS;
+    }
+
+    return { cookie, error };
   } catch (err) {
     return { cookie: null, error: String(err) };
   }
@@ -111,23 +117,25 @@ function extractCookieFromHtml(html: string): { cookie: string | null; error: st
 }
 
 function executeScriptForCookie(scriptContent: string): { cookie: string | null; error: string | null } {
-  let cookieValue: string | null = null;
+  const cookieMap = new Map<string, string>();
 
   const document = {
-    _cookie: '',
     set cookie(val: string) {
-      this._cookie = val;
-      cookieValue = val;
+      // 解析 key=value，忽略后面的 path/expires 等属性
+      const mainPart = val.split(';')[0];
+      const eqIndex = mainPart.indexOf('=');
+      if (eqIndex > 0) {
+        const key = mainPart.slice(0, eqIndex).trim();
+        const value = mainPart.slice(eqIndex + 1).trim();
+        cookieMap.set(key, value);
+      }
     },
     get cookie() {
-      return this._cookie;
+      return [...cookieMap.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
     },
     location: { reload() {} },
   };
   const location = document.location;
-  const windowObj: Record<string, unknown> = {};
-  const selfObj = windowObj;
-  const navigator = {};
 
   try {
     const wrapped = `(function(){${scriptContent}\n})();`;
@@ -136,8 +144,8 @@ function executeScriptForCookie(scriptContent: string): { cookie: string | null;
     return { cookie: null, error: String(err) };
   }
 
-  if (cookieValue) {
-    return { cookie: cookieValue.split(';')[0], error: null };
+  if (cookieMap.size > 0) {
+    return { cookie: document.cookie, error: null };
   }
   return { cookie: null, error: 'script executed but did not set cookie' };
 }
