@@ -33,17 +33,17 @@ const DEBUG_HTML = `<!doctype html>
       margin-bottom: 16px;
     }
     .header h1 {
-      font-size: 1.5rem;
+      font-size: 2.75rem;
       font-weight: 700;
       background: linear-gradient(90deg, #00d4ff, #7b2cbf);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      margin-bottom: 4px;
+      margin-bottom: 12px;
     }
     .header p {
       color: #a0a0a0;
-      font-size: 0.85rem;
+      font-size: 1.3rem;
     }
     .input-group {
       margin-bottom: 12px;
@@ -141,12 +141,12 @@ const DEBUG_HTML = `<!doctype html>
     }
     .cache-item {
       background: rgba(0, 0, 0, 0.2);
-      padding: 10px 8px;
+      padding: 20px 18px;
       border-radius: 8px;
       text-align: center;
     }
     .cache-item .value {
-      font-size: 1rem;
+      font-size: 1.6rem;
       font-weight: 700;
       color: #00d4ff;
       white-space: nowrap;
@@ -154,9 +154,9 @@ const DEBUG_HTML = `<!doctype html>
       text-overflow: ellipsis;
     }
     .cache-item .label {
-      font-size: 0.65rem;
+      font-size: 0.9rem;
       color: #888;
-      margin-top: 2px;
+      margin-top: 8px;
     }
     .btn-group {
       display: flex;
